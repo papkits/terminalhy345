@@ -127,7 +127,7 @@ void argList_add(process* prc, argList* new){
 //evaluate the input and return a list of all the commands ready to be executed
 prcList* evalInput(char** tokenInput, int nTokens){                      
     //Initialize states for input state machine
-    enum inputState{CMD, ARG, PIP, OVRIN, OVROUT, OVRERR, OVRINAP, VAR};
+    enum inputState{CMD, ARG, PIP, OVRIN, OVROUT, OVRERR, OVROUTAP, DEC, VAR};
     //initialize process list
     prcList* processList = prcList_initialize();
     //make a copy of the pointer so we dont lose the head
@@ -140,11 +140,41 @@ prcList* evalInput(char** tokenInput, int nTokens){
     int index = 0;
     //read loop;
     while(index<nTokens){
-
+        int pipeFd[2];                                      //pipe file descripor
+        int pipeFlag = 0;                                   //flag wether the process we are creating needs to have input from pipe
+        char* tkn = tokenInput[index++];                    //read token
+        //TODO: change state if token = >/>>/</2>/|/=
+        if (state !=CMD){                                   //Don't check for special operators on the first command as they cant come before it:
+            if (strcmp(tkn, "<") == 0) {                    //Check if we have an operator changing behaviour of our    
+                state = OVRIN;
+                continue;
+            } 
+            else if (strcmp(tkn, ">") == 0) {
+                state = OVROUT;
+                continue;
+            } 
+            else if (strcmp(tkn, ">>") == 0) {
+                state = OVROUTAP;
+                continue;
+            } 
+            else if (strcmp(tkn, "2>") == 0) {
+                state = OVRERR;
+                continue;
+            } 
+            else if (strcmp(tkn, "|") == 0) {
+                state = PIP;
+                continue;
+            }
+            else if (strcmp(tkn, ";") == 0){
+                state = CMD;
+                continue;
+            }
+        
+        }
+        
         switch (state){
             case CMD: {
 
-                char* tkn = tokenInput[index++];            //read token
                 process* prc = process_initialize(tkn);     //initialize a process with the according name
                 prcList_add(processList, prc);              //add it to the process list
                 curProcess = curProcess->next;              //change current process to the new one
@@ -154,14 +184,37 @@ prcList* evalInput(char** tokenInput, int nTokens){
             
             case ARG:{
                 
-                char* tkn = tokenInput[index++];                  //read token
-                //TODO: change state if token = >/>>/</2>/|/=
-                
                 argList* newArg = argList_initialize(tkn);  //create new argument
                 argList_add(curProcess->prc, newArg);       //add argument to the list on the current process
                 break;        
             }   
-            
+            case OVROUT:{
+                FILE* newOutput = fopen(tkn, "w");
+                process_outputStream(curProcess->prc, newOutput);
+                state = ARG;
+                break;
+            }
+            case OVRIN: {
+                FILE* newIn = fopen(tkn, "r");
+                process_inputStream(curProcess->prc, newIn);
+                state = ARG;
+                break;
+            }
+            case OVROUTAP:{
+                FILE* newOutput = fopen(tkn, "a");
+                process_outputStream(curProcess->prc, newOutput);
+                state = ARG;
+                break;
+            }
+            case OVRERR:{
+                FILE* newErr = fopen(tkn, "w");
+                process_errStream(curProcess->prc, newErr);
+                state = ARG;
+                break;
+            }
+            case PIP:{
+                
+            }
         }
     }
 
@@ -176,6 +229,19 @@ void runPrcList(prcList* processList){
         char** argArray = process_argLtoA(cur->prc);
         int pid = fork();
         if (pid == 0){
+            if(cur->prc->inputStream!=stdin) {
+                int fd = fileno(cur->prc->inputStream);
+                dup2(fd, STDIN_FILENO);
+            }
+            if(cur->prc->outputStream!=stdout){
+                int fd = fileno(cur->prc->outputStream);
+                dup2(fd, STDOUT_FILENO);
+            }
+            if(cur->prc->errorStream!=stderr) {
+                int fd = fileno(cur->prc->errorStream);
+                dup2(fd, STDERR_FILENO);
+            }
+
             execvp(cur->prc->name, (char*const*)argArray);
             //if it reaches this an error occured and we didn't execute
             perror("shell");
@@ -218,7 +284,7 @@ char** getInputTokens(int* nTokens){
 
     int tokens= 16;
     char** tokenInput = malloc(tokens*sizeof(char*));
-    char* curToken = strtok(inputLine, " ;\t\n");
+    char* curToken = strtok(inputLine, " \t\n");
     for (int i = 0; curToken != NULL; i++) {
         tokenInput[i] = strdup(curToken);
         if (i == (tokens-1)){ //if the buffer gets full increase size by another 16
@@ -226,7 +292,7 @@ char** getInputTokens(int* nTokens){
             tokenInput = realloc(tokenInput, tokens*sizeof(char*));
         }
         *nTokens=i+1;
-        curToken = strtok(NULL, " ;\t\n");
+        curToken = strtok(NULL, " \t\n");
     }
     free(inputLine);
     return tokenInput;
